@@ -1,6 +1,11 @@
 import logging
 import math
 
+from clutter import (
+    clutter_patch_area_m2,
+    clutter_sigma0,
+    grazing_angle_rad,
+)
 from radar import (
     RadarSystem,
     angular_resolution_az,
@@ -9,19 +14,24 @@ from radar import (
     max_unambiguous_range,
     minimum_discernible_signal,
     noise_power,
-    power_on_target,
+    echo_power_w,
     range_resolution,
     required_single_pulse_snr_db,
     snr_on_target,
 )
 from scenario import (
+    DetectionGeometry,
     Scenario,
+    clutter_power_w,
+    clutter_rcs_m2,
     line_of_sight_in_body_frame,
+    optimise_for_max_detection_range,
     scenario_detection_margin_db,
+    scenario_sinr_db,
     scenario_snr_db,
     target_in_scan_volume,
 )
-from scenario_1 import build_radar, build_scenario
+from scenario_1 import build_radar, build_scenario_1
 
 logger = logging.getLogger("radar_lab")
 
@@ -38,7 +48,6 @@ def log_section(title: str) -> None:
     logger.info("=== %s ===", title)
 
 
-
 def log_radar_characteristics(radar: RadarSystem) -> None:
     log_section("Radar characteristics")
     wavelength_m = 3e8 / radar.mode.rf.carrier_frequency_hz
@@ -48,10 +57,12 @@ def log_radar_characteristics(radar: RadarSystem) -> None:
     )
     logger.info("range_resolution_m           = %.1f", range_resolution(radar.mode))
     logger.info(
-        "angular_resolution_az_deg    = %.2f", angular_resolution_az(radar.receiver.beam)
+        "angular_resolution_az_deg    = %.2f",
+        angular_resolution_az(radar.receiver.beam),
     )
     logger.info(
-        "angular_resolution_el_deg    = %.2f", angular_resolution_el(radar.receiver.beam)
+        "angular_resolution_el_deg    = %.2f",
+        angular_resolution_el(radar.receiver.beam),
     )
     logger.info("pulses_integrated            = %d", radar.receiver.integration_pulses)
     receiver_noise_w = noise_power(radar)
@@ -64,10 +75,10 @@ def log_radar_characteristics(radar: RadarSystem) -> None:
     logger.info("minimum_discernible_signal_w = %.3e (%.1f dBW)", mds_w, to_db(mds_w))
 
 
-def log_geometry(scenario: Scenario, radar: RadarSystem) -> None:
+def log_geometry(detection_geometry: DetectionGeometry, radar: RadarSystem) -> None:
     log_section("Geometry")
     line_of_sight = line_of_sight_in_body_frame(
-        scenario.radar_pose, scenario.target_position
+        detection_geometry.radar_pose, detection_geometry.target_position
     )
     logger.info("range_m                      = %.1f", line_of_sight.range_m)
     logger.info("azimuth_deg (body frame)     = %.3f", line_of_sight.azimuth_deg)
@@ -78,32 +89,79 @@ def log_geometry(scenario: Scenario, radar: RadarSystem) -> None:
     )
 
 
-def log_link_budget(
-    scenario: Scenario, radar: RadarSystem
-) -> None:
-    log_section("Link budget")
+def log_clutter(scenario: Scenario, radar: RadarSystem) -> None:
+    log_section("Clutter")
+    detection_geometry = scenario.detection_geometry
     line_of_sight = line_of_sight_in_body_frame(
-        scenario.radar_pose, scenario.target_position
+        detection_geometry.radar_pose, detection_geometry.target_position
     )
-    echo_power_w = power_on_target(
-        radar, scenario.target, line_of_sight.range_m
+    psi = grazing_angle_rad(
+        detection_geometry.radar_pose.position.altitude_m,
+        line_of_sight.range_m,
+        detection_geometry.target_position.altitude_m,
     )
-    snr_linear = snr_on_target(
-        radar, scenario.target, line_of_sight.range_m
+    area_m2 = clutter_patch_area_m2(radar, scenario.detection_geometry)
+    rcs_m2 = clutter_rcs_m2(scenario, radar)
+    power_w = clutter_power_w(radar, scenario)
+    if psi is not None:
+        sigma0 = clutter_sigma0(scenario.clutter, psi, radar.mode)
+        logger.info("grazing_angle_deg            = %.3f", math.degrees(psi))
+        logger.info("sigma0                      = %.3e", sigma0)
+        logger.info(
+            "clutter_power_w              = %.3e (%.1f dBW)",
+            power_w,
+            to_db(power_w),
+        )
+    else:
+        logger.info("grazing_angle_deg            = None")
+        logger.info("sigma0                      = N/A")
+
+    logger.info(
+        "clutter_model                = %s", scenario.clutter.model_dump_json(indent=2)
     )
+    logger.info("clutter_patch_area_m2        = %.3e", area_m2)
+    logger.info("clutter_rcs_m2               = %.3e", rcs_m2)
+
+
+def log_link_budget(scenario: Scenario, radar: RadarSystem) -> None:
+    log_section("Link budget")
+    detection_geometry = scenario.detection_geometry
+    line_of_sight = line_of_sight_in_body_frame(
+        detection_geometry.radar_pose, detection_geometry.target_position
+    )
+    echo_power = echo_power_w(
+        radar, detection_geometry.target.radar_cross_section_m2, line_of_sight.range_m
+    )
+    clutter_power = clutter_power_w(radar, scenario)
+    snr_linear = snr_on_target(radar, detection_geometry.target, line_of_sight.range_m)
     logger.info(
         "echo_power_w                 = %.3e (%.1f dBW)",
-        echo_power_w,
-        to_db(echo_power_w),
+        echo_power,
+        to_db(echo_power),
+    )
+    logger.info(
+        "clutter_power_w              = %.3e (%.1f dBW)",
+        clutter_power,
+        to_db(clutter_power),
     )
     logger.info("single_pulse_snr_db          = %.2f", to_db(snr_linear))
+    logger.info(
+        "single_pulse_sinr_db         = %.2f", scenario_sinr_db(scenario, radar)
+    )
     logger.info(
         "scenario_snr_db              = %s",
         scenario_snr_db(scenario, radar),
     )
+    logger.info(
+        "scenario_sinr_db             = %s",
+        scenario_sinr_db(scenario, radar),
+    )
 
     required_db = required_single_pulse_snr_db(
-        radar.receiver, scenario.target, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
+        radar.receiver,
+        scenario.detection_geometry.target,
+        DETECTION_PROBABILITY,
+        FALSE_ALARM_PROBABILITY,
     )
     margin_db = scenario_detection_margin_db(
         scenario, radar, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
@@ -118,40 +176,32 @@ def log_link_budget(
     )
 
 
-def log_max_range_consistency(
-    scenario: Scenario, radar: RadarSystem
-) -> None:
-    """At the maximum detection range, available SNR must equal required SNR."""
-    log_section("Maximum detection range and self-check")
+def log_max_range(scenario: Scenario, radar: RadarSystem) -> None:
+    """Logs maximum detection range and SNR."""
+    log_section("Maximum detection range")
     range_limit_m = max_detection_range(
         radar,
-        scenario.target,
+        scenario.detection_geometry.target,
         DETECTION_PROBABILITY,
         FALSE_ALARM_PROBABILITY,
     )
     range_limit_nmi = range_limit_m / 1852.0
     snr_at_limit_db = to_db(
-        snr_on_target(radar, scenario.target, range_limit_m)
-    )
-    required_db = required_single_pulse_snr_db(
-        radar.receiver, scenario.target, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
+        snr_on_target(radar, scenario.detection_geometry.target, range_limit_m)
     )
     logger.info("max_detection_range_m        = %.1f", range_limit_m)
     logger.info("max_detection_range_nmi      = %.3f", range_limit_nmi)
     logger.info("snr_at_max_range_db          = %.3f", snr_at_limit_db)
-    logger.info("required_snr_db              = %.3f", required_db)
-    logger.info("mismatch_db (should be ~0)   = %.6f", snr_at_limit_db - required_db)
 
 
-def log_swerling_sweep(
-    scenario: Scenario, radar: RadarSystem
-) -> None:
+def log_swerling_sweep(scenario: Scenario, radar: RadarSystem) -> None:
     log_section("Swerling case sweep (non-coherent)")
     line_of_sight = line_of_sight_in_body_frame(
-        scenario.radar_pose, scenario.target_position
+        scenario.detection_geometry.radar_pose,
+        scenario.detection_geometry.target_position,
     )
     available_db = to_db(
-        snr_on_target(radar, scenario.target, line_of_sight.range_m)
+        snr_on_target(radar, scenario.detection_geometry.target, line_of_sight.range_m)
     )
     logger.info(
         "available_single_pulse_snr_db = %.2f at range %.1f m",
@@ -159,7 +209,9 @@ def log_swerling_sweep(
         line_of_sight.range_m,
     )
     for swerling_case in (0, 1, 2, 3, 4):
-        target = scenario.target.model_copy(update={"swerling_case": swerling_case})
+        target = scenario.detection_geometry.target.model_copy(
+            update={"swerling_case": swerling_case}
+        )
         required_db = required_single_pulse_snr_db(
             radar.receiver, target, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
         )
@@ -179,7 +231,31 @@ def log_swerling_sweep(
         )
 
 
-def radar_diagnostics(radar: RadarSystem) -> None:
+def log_optimised_for_max_detection_range(
+    scenario: Scenario,
+    radar: RadarSystem,
+    detection_probability_threshold: float,
+    false_alarm_probability_threshold: float,
+) -> None:
+    optimized = optimise_for_max_detection_range(
+        scenario,
+        radar,
+        detection_probability_threshold,
+        false_alarm_probability_threshold,
+    )
+    line_of_sight = line_of_sight_in_body_frame(
+        optimized.detection_geometry.radar_pose,
+        optimized.detection_geometry.target_position,
+    )
+    log_section("Optimised for max detection range")
+    logger.info("optimised_target_range_m    = %.1f", line_of_sight.range_m)
+    logger.info("optimised_target_range_nmi  = %.3f", line_of_sight.range_m / 1852.0)
+    logger.info("optimised_target_az_deg     = %.3f", line_of_sight.azimuth_deg)
+    logger.info("optimised_target_el_deg     = %.3f", line_of_sight.elevation_deg)
+    logger.info("optimised_snr_db            = %s", scenario_snr_db(optimized, radar))
+
+
+def radar_diagnostics(radar: RadarSystem, scenario: Scenario) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(message)s",
@@ -189,21 +265,28 @@ def radar_diagnostics(radar: RadarSystem) -> None:
         ],
     )
 
-    scenario = build_scenario()
-
     log_section("Inputs")
     logger.info("detection_probability        = %s", DETECTION_PROBABILITY)
     logger.info("false_alarm_probability      = %s", FALSE_ALARM_PROBABILITY)
     logger.info("radar = %s", radar.model_dump_json(indent=2))
     logger.info("scenario = %s", scenario.model_dump_json(indent=2))
+    logger.info("clutter = %s", scenario.clutter.model_dump_json(indent=2))
 
     log_radar_characteristics(radar)
-    log_geometry(scenario, radar)
-    log_link_budget(scenario, radar)
-    log_max_range_consistency(scenario, radar)
+    log_geometry(scenario.detection_geometry, radar)
+    log_clutter(scenario, radar)
+    log_max_range(scenario, radar)
     log_swerling_sweep(scenario, radar)
+    log_optimised_for_max_detection_range(
+        scenario,
+        radar,
+        DETECTION_PROBABILITY,
+        FALSE_ALARM_PROBABILITY,
+    )
+    log_link_budget(scenario, radar)
 
 
 if __name__ == "__main__":
     radar = build_radar()
-    radar_diagnostics(radar)
+    scenario = build_scenario_1()
+    radar_diagnostics(radar, scenario)

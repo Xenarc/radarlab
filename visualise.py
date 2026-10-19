@@ -6,7 +6,8 @@ import pymap3d
 from matplotlib.patches import Ellipse, Rectangle, Wedge
 
 from main import DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY, radar_diagnostics, to_db
-from scenario_1 import build_radar, build_scenario
+from scenario_1 import build_radar, build_scenario_1, build_scenario_2, build_scenario_3
+from kinematics import DetectionGeometry
 from radar import (
     RadarSystem,
     max_detection_range,
@@ -21,14 +22,17 @@ from scenario import (
 )
 
 
-def target_offset_ned_m(scenario: Scenario) -> tuple[float, float, float]:
+def target_offset_ned_m(
+    detection_geometry: DetectionGeometry,
+) -> tuple[float, float, float]:
     """Target position relative to the radar in local North-East-Down, in metres."""
-    radar = scenario.radar_pose.position
-    target = scenario.target_position
+    radar = detection_geometry.radar_pose.position
+    target = detection_geometry.target_position
     return pymap3d.geodetic2ned(
         target.latitude_deg, target.longitude_deg, target.altitude_m,
         radar.latitude_deg, radar.longitude_deg, radar.altitude_m,
     )
+
 
 def beam_sector_points(centre_angle_deg: float, width_deg: float, length_m: float, steps: int = 30):
     """Outline of a beam wedge from the origin. Angles are anticlockwise from the x-axis."""
@@ -40,10 +44,12 @@ def beam_sector_points(centre_angle_deg: float, width_deg: float, length_m: floa
     return x_points, y_points
 
 
-def plot_plan_view(axis, scenario: Scenario, radar: RadarSystem) -> None:
+def plot_plan_view(
+    axis, detection_geometry: DetectionGeometry, radar: RadarSystem
+) -> None:
     """Top-down view: scan sector, steered beam, boresight and target, north up."""
-    north_m, east_m, _ = target_offset_ned_m(scenario)
-    yaw_deg = scenario.radar_pose.attitude.yaw_deg
+    north_m, east_m, _ = target_offset_ned_m(detection_geometry)
+    yaw_deg = detection_geometry.radar_pose.attitude.yaw_deg
     half_scan_az_deg = radar.mode.scan.scan_extent_az_deg / 2.0
     beamwidth_az_deg = radar.transmitter.beam.beamwidth_az_deg
     ground_range_m = math.hypot(north_m, east_m)
@@ -84,9 +90,11 @@ def plot_plan_view(axis, scenario: Scenario, radar: RadarSystem) -> None:
     axis.grid(alpha=0.3)
 
 
-def plot_side_view(axis, scenario: Scenario, radar: RadarSystem) -> None:
+def plot_side_view(
+    axis, detection_geometry: DetectionGeometry, radar: RadarSystem
+) -> None:
     """Vertical slice through the radar and target, with the elevation beam."""
-    north_m, east_m, down_m = target_offset_ned_m(scenario)
+    north_m, east_m, down_m = target_offset_ned_m(detection_geometry)
     ground_range_m = math.hypot(north_m, east_m)
     height_m = -down_m
     slant_range_m = math.hypot(ground_range_m, height_m)
@@ -113,10 +121,15 @@ def plot_side_view(axis, scenario: Scenario, radar: RadarSystem) -> None:
     axis.set_title("Side view (flat-earth sketch)")
     axis.legend(loc="upper left", fontsize=8)
     axis.grid(alpha=0.3)
-    
-def plot_body_frame_view(axis, scenario: Scenario, radar: RadarSystem) -> None:
+
+
+def plot_body_frame_view(
+    axis, detection_geometry: DetectionGeometry, radar: RadarSystem
+) -> None:
     """Where the target sits in the radar's own azimuth/elevation coordinates."""
-    line_of_sight = line_of_sight_in_body_frame(scenario.radar_pose, scenario.target_position)
+    line_of_sight = line_of_sight_in_body_frame(
+        detection_geometry.radar_pose, detection_geometry.target_position
+    )
     scan = radar.mode.scan
     beam = radar.transmitter.beam
     inside = target_in_scan_volume(radar, line_of_sight)
@@ -155,18 +168,27 @@ def plot_snr_against_range(
     axis, scenario: Scenario, radar: RadarSystem
 ) -> None:
     """Available SNR against range, with the required SNR for each Swerling case."""
-    line_of_sight = line_of_sight_in_body_frame(scenario.radar_pose, scenario.target_position)
+    line_of_sight = line_of_sight_in_body_frame(
+        scenario.detection_geometry.radar_pose,
+        scenario.detection_geometry.target_position,
+    )
     scenario_limit_m = max_detection_range(
-        radar, scenario.target, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
+        radar,
+        scenario.detection_geometry.target,
+        DETECTION_PROBABILITY,
+        FALSE_ALARM_PROBABILITY,
     )
     ranges_m = np.logspace(3.0, math.log10(3.0 * max(scenario_limit_m, line_of_sight.range_m)), 300)
     available_db = [
-        to_db(snr_on_target(radar, scenario.target, range_m)) for range_m in ranges_m
+        to_db(snr_on_target(radar, scenario.detection_geometry.target, range_m))
+        for range_m in ranges_m
     ]
     axis.plot(ranges_m / 1000.0, available_db, color="black", linewidth=2, label="available single-pulse SNR")
 
     for swerling_case in (0, 1, 2, 3, 4):
-        target = scenario.target.model_copy(update={"swerling_case": swerling_case})
+        target = scenario.detection_geometry.target.model_copy(
+            update={"swerling_case": swerling_case}
+        )
         try:
             required_db = required_single_pulse_snr_db(
                 radar.receiver, target, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
@@ -174,7 +196,13 @@ def plot_snr_against_range(
         except ValueError:
             continue  # this case is invalid for the receiver's integration method
         axis.axhline(
-            required_db, linestyle="--", alpha=0.8 if swerling_case == scenario.target.swerling_case else 0.4,
+            required_db,
+            linestyle="--",
+            alpha=(
+                0.8
+                if swerling_case == scenario.detection_geometry.target.swerling_case
+                else 0.4
+            ),
             label=f"required, Swerling {swerling_case}",
         )
 
@@ -197,9 +225,9 @@ def plot_snr_against_range(
 
 def visualise(scenario: Scenario, radar: RadarSystem, save_path: str | None = None):
     figure, axes = plt.subplots(2, 2, figsize=(14, 10))
-    plot_plan_view(axes[0, 0], scenario, radar)
-    plot_side_view(axes[0, 1], scenario, radar)
-    plot_body_frame_view(axes[1, 0], scenario, radar)
+    plot_plan_view(axes[0, 0], scenario.detection_geometry, radar)
+    plot_side_view(axes[0, 1], scenario.detection_geometry, radar)
+    plot_body_frame_view(axes[1, 0], scenario.detection_geometry, radar)
     plot_snr_against_range(axes[1, 1], scenario, radar)
     figure.tight_layout()
     if save_path:
@@ -209,8 +237,8 @@ def visualise(scenario: Scenario, radar: RadarSystem, save_path: str | None = No
 
 def main() -> None:
     radar = build_radar()
-    scenario = build_scenario()
-    radar_diagnostics(radar)
+    scenario = build_scenario_3()
+    radar_diagnostics(radar, scenario)
     visualise(scenario, radar, save_path="radar_run.png")
     plt.show()
 

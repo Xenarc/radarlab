@@ -3,6 +3,7 @@ import math
 
 import pymap3d
 
+from clutter import GroundClutter, SeaClutter
 from radar import (
     PRI,
     AntennaBeam,
@@ -20,13 +21,15 @@ from radar import (
     LFMModulation,
     RadarSystem,
 )
-from scenario import (
+from kinematics import (
     Attitude,
+    DetectionGeometry,
     GeodeticPosition,
     Pose,
-    Scenario,
+    target_from_ned,
+    boresight_attitude,
 )
-
+from scenario import Scenario
 
 def build_radar() -> RadarSystem:
     """A simple pulsed radar."""
@@ -55,7 +58,7 @@ def build_radar() -> RadarSystem:
     return RadarSystem(transmitter=transmitter, receiver=receiver, mode=mode)
 
 
-def build_scenario() -> Scenario:
+def build_scenario_1() -> Scenario:
     """Radar on the ground, target 20 km north, 10 km east and 3 km above it."""
     radar_position = GeodeticPosition(
         latitude_deg=-27.47, longitude_deg=153.03, altitude_m=50.0
@@ -69,14 +72,58 @@ def build_scenario() -> Scenario:
         radar_position.altitude_m,
     )
     return Scenario(
-        radar_pose=Pose(
-            position=radar_position,
-            attitude=Attitude(yaw_deg=10.0, pitch_deg=15.0, roll_deg=0.0),
+        detection_geometry=DetectionGeometry(
+            radar_pose=Pose(
+                position=radar_position,
+                attitude=Attitude(yaw_deg=10.0, pitch_deg=15.0, roll_deg=0.0),
+            ),
+            target_position=GeodeticPosition(
+                latitude_deg=target_latitude,
+                longitude_deg=target_longitude,
+                altitude_m=target_altitude,
+            ),
+            target=Target(radar_cross_section_m2=1.0, swerling_case=1),
         ),
-        target_position=GeodeticPosition(
-            latitude_deg=target_latitude,
-            longitude_deg=target_longitude,
-            altitude_m=target_altitude,
+        clutter=GroundClutter(gamma_db=-20.0),
+    )
+
+
+def build_scenario_2() -> Scenario:
+    """Co-altitude: airborne radar and target both at 5 km, target 25 km north
+    and 15 km east. No ground/sea clutter in the main beam (horizon-looking)."""
+    radar_position = GeodeticPosition(
+        latitude_deg=-27.47, longitude_deg=153.03, altitude_m=5_000.0
+    )
+    north_m, east_m, down_m = 25_000.0, 15_000.0, 0.0
+    return Scenario(
+        detection_geometry=DetectionGeometry(
+            radar_pose=Pose(
+                position=radar_position,
+                attitude=boresight_attitude(north_m, east_m, down_m),
+            ),
+            target_position=target_from_ned(radar_position, north_m, east_m, down_m),
+            target=Target(radar_cross_section_m2=1.0, swerling_case=1),
         ),
-        target=Target(radar_cross_section_m2=1.0, swerling_case=1),
+        clutter=GroundClutter(),
+    )
+
+
+def build_scenario_3() -> Scenario:
+    """Look-down over sea: airborne radar at 8 km, low target at 500 m,
+    20 km north and 20 km east, all over open water east of Brisbane."""
+    radar_position = GeodeticPosition(
+        latitude_deg=-27.47, longitude_deg=154.2, altitude_m=8_000.0
+    )
+    north_m, east_m = 20_000.0, 20_000.0
+    down_m = 7_500.0  # target at 500 m altitude
+    return Scenario(
+        detection_geometry=DetectionGeometry(
+            radar_pose=Pose(
+                position=radar_position,
+                attitude=boresight_attitude(north_m, east_m, down_m),
+            ),
+            target_position=target_from_ned(radar_position, north_m, east_m, down_m),
+            target=Target(radar_cross_section_m2=1.0, swerling_case=1),
+        ),
+        clutter=SeaClutter(sea_state=3),
     )

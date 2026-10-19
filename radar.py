@@ -29,7 +29,6 @@ class RadioFrequency(BaseModel):
     carrier_frequency_hz: float = Field(default=10e9, gt=0.0)
 
 
-
 class RectangularModulation(BaseModel):
     """Unmodulated pulse. Bandwidth ~ 1/tau, so there is no compression."""
 
@@ -46,10 +45,15 @@ class LFMModulation(BaseModel):
     """Linear FM chirp. Bandwidth is a free design parameter."""
 
     type: Literal["LFM"] = "LFM"
-    bandwidth_hz: float = Field(gt=0.0, description="Swept bandwidth in Hz")
+    swept_bandwidth_hz: float = Field(
+        gt=0.0, alias="bandwidth_hz", description="Swept bandwidth in Hz"
+    )
+
+    def bandwidth_hz(self, pulse_width_s: float) -> float:
+        return self.swept_bandwidth_hz
 
     def compression_ratio(self, pulse_width_s: float) -> float:
-        return self.bandwidth_hz * pulse_width_s  # time-bandwidth product
+        return self.swept_bandwidth_hz * pulse_width_s  # time-bandwidth product
 
 
 class BarkerModulation(BaseModel):
@@ -66,15 +70,20 @@ class BarkerModulation(BaseModel):
     def compression_ratio(self, pulse_width_s: float) -> float:
         return float(self.code_length)
 
+
 class PulseModulation(Protocol):
-    def bandwidth_hz(self, pulse: "Pulse"):...
-    def compression_ratio(self, pulse: "Pulse"):...
+
+    def bandwidth_hz(self, pulse: "Pulse"): ...
+    def compression_ratio(self, pulse: "Pulse"): ...
+
 
 class Pulse(BaseModel):
     """Pulse parameters for a radar system."""
 
     pulse_width_3dB_us: float = Field(default=1.0, gt=0.0)
-    modulation: BarkerModulation|RectangularModulation|LFMModulation = Field(default_factory=RectangularModulation)
+    modulation: BarkerModulation | RectangularModulation | LFMModulation = Field(
+        default_factory=RectangularModulation
+    )
     if_bandwidth_hz: float = Field(
         default=1e6, gt=0.0, description="Intermediate frequency bandwidth in Hz"
     )
@@ -88,6 +97,7 @@ class Pulse(BaseModel):
                 f"the signal bandwidth ({bw:.3g})"
             )
         return self
+
 
 class Power(BaseModel):
     """Power parameters for a radar system."""
@@ -245,15 +255,18 @@ def effective_receive_aperture_m2(
     )
 
 
-def power_on_target(
-    radar: RadarSystem, target: Target, range_m: float
-) -> float:
-    """Received echo power (W) at the receiver input: EIRP * sigma * Ae / ((4*pi)^2 * R^4)."""
+def echo_power_w(radar: RadarSystem, rcs_m2: float, range_m: float) -> float:
+    """Received echo power (W) at the receiver input for any scatterer of RCS `rcs_m2`.
+
+    EIRP * sigma * Ae / ((4*pi)^2 * R^4), boresight gain assumed.
+    """
+
     return (
         eirp_w(radar.transmitter, radar.mode)
-        * target.radar_cross_section_m2
+        * rcs_m2
         * effective_receive_aperture_m2(radar.receiver, radar.mode)
     ) / ((4 * math.pi) ** 2 * range_m**4)
+
 
 def noise_power(radar: RadarSystem) -> float:
     """Receiver noise power (W) = k * T0 * B_sig * F.
@@ -288,7 +301,7 @@ def snr_on_target(
 ) -> float:
     """Single-pulse SNR (linear) after pulse compression, before integration."""
     return (
-        power_on_target(radar, target, range_m)
+        echo_power_w(radar, target.radar_cross_section_m2, range_m)
         * pulse_compression_gain(radar.mode)
         / noise_power(radar)
     )
