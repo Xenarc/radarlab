@@ -1,8 +1,20 @@
 import math
 
+from matplotlib import pyplot as plt
 import numpy as np
+import pymap3d
 from pydantic import BaseModel, Field
+from scipy.optimize import brentq
 from scipy.spatial.transform import Rotation
+
+from kinematics import (
+    Attitude,
+    DetectionGeometry,
+    GeodeticPosition,
+    Pose,
+    target_from_ned,
+    boresight_attitude,
+)
 from clutter import (
     GroundClutter,
     SeaClutter,
@@ -19,11 +31,11 @@ from kinematics import (
 from radar import (
     RadarSystem,
     echo_power_w,
-    max_detection_range,
     noise_power,
     pulse_compression_gain,
     required_single_pulse_snr_db,
     snr_on_target,
+    to_db,
 )
 
 class Scenario(BaseModel):
@@ -55,13 +67,8 @@ def scenario_snr_db(scenario: Scenario, radar: RadarSystem) -> float | None:
     return 10.0 * math.log10(snr_linear)
 
 
-def optimise_for_max_detection_range(
-    scenario: Scenario,
-    radar: RadarSystem,
-    detection_probability_threshold: float,
-    false_alarm_probability_threshold: float = 1e-6,
-) -> Scenario:
-    """Return a scenario whose target sits at the maximum detectability range along the current boresight."""
+def scenario_with_max_range(scenario: Scenario, max_range_m: float) -> Scenario:
+    """Move the target to the specified maximum range while keeping its altitude fixed."""
     detection_geometry = scenario.detection_geometry
     line_of_sight = line_of_sight_in_body_frame(
         detection_geometry.radar_pose, detection_geometry.target_position
@@ -69,32 +76,30 @@ def optimise_for_max_detection_range(
     if line_of_sight.range_m <= 0.0:
         raise ValueError("Target range must be positive.")
 
-    max_range_m = max_detection_range(
-        radar,
-        detection_geometry.target,
-        detection_probability_threshold,
-        false_alarm_probability_threshold,
+    current_north_m, current_east_m, current_down_m = pymap3d.geodetic2ned(
+        detection_geometry.target_position.latitude_deg,
+        detection_geometry.target_position.longitude_deg,
+        detection_geometry.target_position.altitude_m,
+        detection_geometry.radar_pose.position.latitude_deg,
+        detection_geometry.radar_pose.position.longitude_deg,
+        detection_geometry.radar_pose.position.altitude_m,
     )
+    horizontal_range_m = math.hypot(current_north_m, current_east_m)
+    if horizontal_range_m <= 0.0:
+        raise ValueError(
+            "Target must not be directly above the radar to place it at max range."
+        )
+    if max_range_m < abs(current_down_m):
+        raise ValueError(
+            "Requested range is shorter than the target's altitude offset; keeping altitude would be impossible."
+        )
 
-    azimuth_rad = math.radians(line_of_sight.azimuth_deg)
-    elevation_rad = math.radians(line_of_sight.elevation_deg)
-    body_direction = np.array(
-        [
-            math.cos(elevation_rad) * math.cos(azimuth_rad),
-            math.cos(elevation_rad) * math.sin(azimuth_rad),
-            -math.sin(elevation_rad),
-        ],
-        dtype=float,
-    )
-
-    attitude = detection_geometry.radar_pose.attitude
-    body_to_local = Rotation.from_euler(
-        "ZYX",
-        [attitude.yaw_deg, attitude.pitch_deg, attitude.roll_deg],
-        degrees=True,
-    )
-    local_direction = body_to_local.apply(body_direction)
-    north_m, east_m, down_m = max_range_m * local_direction
+    # Keep the target at the same altitude as the current geometry while moving it out
+    # along the existing bearing in the horizontal plane.
+    desired_horizontal_range_m = math.sqrt(max_range_m**2 - current_down_m**2)
+    north_m = desired_horizontal_range_m * (current_north_m / horizontal_range_m)
+    east_m = desired_horizontal_range_m * (current_east_m / horizontal_range_m)
+    down_m = current_down_m
 
     new_target_position = target_from_ned(
         detection_geometry.radar_pose.position,
@@ -102,14 +107,71 @@ def optimise_for_max_detection_range(
         float(east_m),
         float(down_m),
     )
-
-    return scenario.model_copy(
-        update={
-            "detection_geometry": detection_geometry.model_copy(
-                update={"target_position": new_target_position}
-            )
-        }
+    return Scenario(
+        detection_geometry=DetectionGeometry(
+            radar_pose=Pose(
+                position=scenario.detection_geometry.radar_pose.position,
+                attitude=boresight_attitude(north_m, east_m, down_m),
+            ),
+            target_position=new_target_position,
+            target=scenario.detection_geometry.target,
+        ),
+        clutter=scenario.clutter,
     )
+
+
+def optimise_for_max_detection_range(
+    scenario: Scenario,
+    radar: RadarSystem,
+    detection_probability_threshold: float = 0.9,
+    false_alarm_probability_threshold: float = 1e-6,
+    min_range_m: float = 1.0,
+    max_range_m: float = 100_000.0,
+    n_grid: int = 200,
+) -> Scenario:
+    """Return a scenario with the target at the farthest range where SINR margin >= 0."""
+
+    def margin_db(range_m: float) -> float:
+        try:
+            candidate = scenario_with_max_range(scenario, float(range_m))
+        except ValueError:
+            return float("nan")
+        margin = scenario_sinr_margin_db(
+            candidate,
+            radar,
+            detection_probability_threshold,
+            false_alarm_probability_threshold,
+        )
+        return float("nan") if margin is None else margin
+
+    ranges = np.linspace(min_range_m, max_range_m, n_grid)
+    margins = np.array([margin_db(r) for r in ranges])
+
+    valid = np.isfinite(margins)
+    if not valid.any():
+        raise ValueError("No valid SINR margin found in the search range.")
+
+    detectable = valid & (margins >= 0.0)
+    if not detectable.any():
+        raise ValueError("Target is undetectable at every range in the search range.")
+
+    last = int(np.flatnonzero(detectable)[-1])
+
+    # Still detectable at the far limit: nothing to refine.
+    if last == n_grid - 1:
+        return scenario_with_max_range(scenario, float(ranges[last]))
+
+    # Bracket the farthest crossing: [last (>= 0), next valid point (< 0)].
+    nxt = last + 1
+    while nxt < n_grid and not valid[nxt]:
+        nxt += 1
+    if nxt == n_grid:
+        return scenario_with_max_range(scenario, float(ranges[last]))
+
+    root = brentq(
+        margin_db, ranges[last], ranges[nxt], xtol=1e-3, rtol=1e-6, maxiter=100
+    )
+    return scenario_with_max_range(scenario, float(root))
 
 
 def scenario_sinr_db(scenario: Scenario, radar: RadarSystem) -> float | None:
@@ -122,10 +184,10 @@ def scenario_sinr_db(scenario: Scenario, radar: RadarSystem) -> float | None:
         print(f"target out of scan volume! line_of_sight:\n{line_of_sight}")
         return None
     sinr_linear = sinr_on_target(radar, scenario)
-    return 10.0 * math.log10(sinr_linear)
+    return to_db(sinr_linear)
 
 
-def scenario_detection_margin_db(
+def scenario_snr_margin_db(
     scenario: Scenario,
     radar: RadarSystem,
     detection_probability_threshold: float,
@@ -210,5 +272,4 @@ def sinr_on_target(radar: RadarSystem, scenario: Scenario) -> float:
         )
         * pcg
     )
-    clutter = clutter_power_w(radar, scenario) * pcg
-    return signal / (noise_power(radar) + clutter)
+    return signal / (noise_power(radar) + (clutter_power_w(radar, scenario)))

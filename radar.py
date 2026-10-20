@@ -192,6 +192,10 @@ def db_to_lin(x_db: float) -> float:
     return 10 ** (x_db / 10)
 
 
+def to_db(linear: float) -> float:
+    return 10.0 * math.log10(linear)
+
+
 def wavelength_m(mode: Mode) -> float:
     """Carrier wavelength (m)."""
     return SPEED_OF_LIGHT_M_S / mode.rf.carrier_frequency_hz
@@ -413,7 +417,7 @@ def required_single_pulse_snr_db(
     return single_pulse_requirement_db - 10.0 * math.log10(pulse_count)
 
 
-def max_detection_range(
+def closed_form_max_detection_range(
     radar: RadarSystem,
     target: Target,
     detection_probability_threshold: float,
