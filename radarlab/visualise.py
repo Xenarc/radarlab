@@ -346,7 +346,7 @@ def visualise(scenario: Scenario, radar: RadarSystem, save_path: str | None = No
 
 
 def main() -> None:
-    radar = build_radar_1()
+    radar = build_radar_2()
     scenario = build_scenario_3()
     radar_diagnostics(radar, scenario)
     visualise(scenario, radar)
