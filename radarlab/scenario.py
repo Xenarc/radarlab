@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from scipy.optimize import brentq
 from scipy.spatial.transform import Rotation
 
-from kinematics import (
+from radarlab.kinematics import (
     Attitude,
     DetectionGeometry,
     GeodeticPosition,
@@ -15,20 +15,20 @@ from kinematics import (
     target_from_ned,
     boresight_attitude,
 )
-from clutter import (
+from radarlab.clutter import (
     GroundClutter,
     SeaClutter,
     clutter_patch_area_m2,
     clutter_sigma0,
     grazing_angle_rad,
 )
-from kinematics import (
+from radarlab.kinematics import (
     DetectionGeometry,
     LineOfSight,
     line_of_sight_in_body_frame,
     target_from_ned,
 )
-from radar import (
+from radarlab.radar import (
     RadarSystem,
     echo_power_w,
     noise_power,
@@ -37,6 +37,10 @@ from radar import (
     snr_on_target,
     to_db,
 )
+from radarlab.atmospheric_attenuation import atmospheric_loss
+
+DETECTION_PROBABILITY = 0.9
+FALSE_ALARM_PROBABILITY = 1e-6
 
 class Scenario(BaseModel):
     """Static scenario: one radar platform and one target at a fixed position."""
@@ -123,10 +127,10 @@ def scenario_with_max_range(scenario: Scenario, max_range_m: float) -> Scenario:
 def optimise_for_max_detection_range(
     scenario: Scenario,
     radar: RadarSystem,
-    detection_probability_threshold: float = 0.9,
-    false_alarm_probability_threshold: float = 1e-6,
+    detection_probability_threshold: float = DETECTION_PROBABILITY,
+    false_alarm_probability_threshold: float = FALSE_ALARM_PROBABILITY,
     min_range_m: float = 1.0,
-    max_range_m: float = 100_000.0,
+    max_range_m: float = 250_000.0,
     n_grid: int = 200,
 ) -> Scenario:
     """Return a scenario with the target at the farthest range where SINR margin >= 0."""
@@ -264,6 +268,12 @@ def sinr_on_target(radar: RadarSystem, scenario: Scenario) -> float:
         detection_geometry.radar_pose, detection_geometry.target_position
     )
     pcg = pulse_compression_gain(radar.mode)
+    atmos = atmospheric_loss(
+        radar,
+        line_of_sight.range_m,
+        detection_geometry.radar_pose.position.altitude_m,
+        detection_geometry.target_position.altitude_m,
+    )
     signal = (
         echo_power_w(
             radar,
@@ -271,5 +281,6 @@ def sinr_on_target(radar: RadarSystem, scenario: Scenario) -> float:
             line_of_sight.range_m,
         )
         * pcg
+        * atmos
     )
     return signal / (noise_power(radar) + (clutter_power_w(radar, scenario)))

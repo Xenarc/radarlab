@@ -1,11 +1,11 @@
-from kinematics import (
+from radarlab.kinematics import (
     DetectionGeometry,
     target_from_ned,
 )
 import pymap3d
 
-from clutter import GroundClutter, SeaClutter
-from radar import (
+from radarlab.clutter import GroundClutter, SeaClutter
+from radarlab.radar import (
     PRI,
     AntennaBeam,
     Mode,
@@ -22,7 +22,7 @@ from radar import (
     LFMModulation,
     RadarSystem,
 )
-from kinematics import (
+from radarlab.kinematics import (
     Attitude,
     DetectionGeometry,
     GeodeticPosition,
@@ -30,7 +30,7 @@ from kinematics import (
     target_from_ned,
     boresight_attitude,
 )
-from scenario import Scenario
+from radarlab.scenario import Scenario
 
 
 def build_radar_1() -> RadarSystem:
@@ -61,7 +61,8 @@ def build_radar_1() -> RadarSystem:
 
 
 def build_radar_2() -> RadarSystem:
-    """Notional X-band fighter AESA (APG-79 class), built from open-source estimates."""
+    """Notional X-band radar"""
+
     mode = Mode(
         rf=RadioFrequency(
             carrier_frequency_hz=10e9,  # X-band
@@ -142,7 +143,7 @@ def build_scenario_2(east: float = 15_000) -> Scenario:
 
 
 def build_scenario_3(
-    radar_altitude: float = 3_000, target_altitude: float = 10
+    radar_altitude: float = 3_000, target_altitude: float = 500
 ) -> Scenario:
     """Look-down over sea: airborne radar at radar_altitude km, target at target_altitude m,
     20 km north and 20 km east, all over open water east of Brisbane."""

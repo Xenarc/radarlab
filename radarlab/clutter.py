@@ -1,16 +1,17 @@
 import math
 from typing import Annotated, Final, Literal, Protocol, TypeAlias, Union
 
+import numpy as np
 from pydantic import BaseModel, Field
 
-from kinematics import line_of_sight_in_body_frame
-from radar import (
+from radarlab.kinematics import line_of_sight_in_body_frame
+from radarlab.radar import (
     Mode,
     RadarSystem,
     db_to_lin,
     range_resolution,
 )
-from kinematics import DetectionGeometry
+from radarlab.kinematics import DetectionGeometry
 
 TerrainType: TypeAlias = Literal["Desert", "Farmland", "Grassland", "Woods", "Urban"]
 SeaState: TypeAlias = Literal[1, 2, 3, 4, 5, 6]
@@ -45,6 +46,7 @@ class SeaClutter(BaseModel):
 def ground_sigma0(clutter: GroundClutter, psi: float) -> float:
     """Land normalised reflectivity (linear) = gamma * sin(grazing angle)."""
     return db_to_lin(clutter.gamma_db) * math.sin(psi)
+
 
 def sea_sigma0(clutter: SeaClutter, psi: float, mode: Mode) -> float:
     """Sea normalised reflectivity (linear).
@@ -89,7 +91,7 @@ def clutter_sigma0(
             raise ValueError(f"Invalid clutter type:\n{clutter}")
 
 
-def grazing_angle_rad(radar_height_m, range_m, target_height_m) -> float|None:
+def grazing_angle_rad(radar_height_m, range_m, target_height_m) -> float | None:
     if range_m <= 0:
         raise ValueError("range_m must be positive")
     ratio = (radar_height_m - target_height_m) / range_m
@@ -99,7 +101,10 @@ def grazing_angle_rad(radar_height_m, range_m, target_height_m) -> float|None:
     else:
         return psi
 
-def clutter_patch_area_m2(radar: RadarSystem, detection_geometry: DetectionGeometry) -> float:
+
+def clutter_patch_area_m2(
+    radar: RadarSystem, detection_geometry: DetectionGeometry
+) -> float:
     """Illuminated clutter area (m^2) in the range cell at `range_m`.
 
     Azimuth extent = R * beamwidth. Ground-range extent is the smaller of the
@@ -110,7 +115,9 @@ def clutter_patch_area_m2(radar: RadarSystem, detection_geometry: DetectionGeome
         detection_geometry.radar_pose, detection_geometry.target_position
     )
     psi = grazing_angle_rad(
-        detection_geometry.radar_pose.position.altitude_m, line_of_sight.range_m, detection_geometry.target_position.altitude_m
+        detection_geometry.radar_pose.position.altitude_m,
+        line_of_sight.range_m,
+        detection_geometry.target_position.altitude_m,
     )
     if psi is None:
         return 0
@@ -120,4 +127,3 @@ def clutter_patch_area_m2(radar: RadarSystem, detection_geometry: DetectionGeome
     pulse_limited = range_resolution(radar.mode) / max(math.cos(psi), 1e-6)
     beam_limited = line_of_sight.range_m * theta_el / max(math.sin(psi), 1e-6)
     return line_of_sight.range_m * theta_az * min(pulse_limited, beam_limited)
-

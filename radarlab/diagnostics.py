@@ -1,12 +1,12 @@
 import logging
 import math
 
-from clutter import (
+from radarlab.clutter import (
     clutter_patch_area_m2,
     clutter_sigma0,
     grazing_angle_rad,
 )
-from radar import (
+from radarlab.radar import (
     RadarSystem,
     angular_resolution_az,
     angular_resolution_el,
@@ -20,7 +20,9 @@ from radar import (
     snr_on_target,
     to_db,
 )
-from scenario import (
+from radarlab.scenario import (
+    DETECTION_PROBABILITY,
+    FALSE_ALARM_PROBABILITY,
     DetectionGeometry,
     Scenario,
     clutter_power_w,
@@ -32,7 +34,7 @@ from scenario import (
     scenario_snr_db,
     target_in_scan_volume,
 )
-from scenario_1 import (
+from radarlab.example_scenarios import (
     build_radar_1,
     build_radar_2,
     build_scenario_1,
@@ -41,9 +43,6 @@ from scenario_1 import (
 )
 
 logger = logging.getLogger("radar_lab")
-
-DETECTION_PROBABILITY = 0.9
-FALSE_ALARM_PROBABILITY = 1e-6
 
 
 def log_section(title: str) -> None:
@@ -171,7 +170,8 @@ def log_link_budget(scenario: Scenario, radar: RadarSystem) -> None:
         radar.receiver,
         scenario.detection_geometry.target,
         DETECTION_PROBABILITY,
-        FALSE_ALARM_PROBABILITY,
+        FALSE_ALARM_PROBABILITY
+        ,
     )
     margin_db = scenario_snr_margin_db(
         scenario, radar, DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY
@@ -255,20 +255,27 @@ def log_optimised_for_max_detection_range(
     detection_probability_threshold: float,
     false_alarm_probability_threshold: float,
 ) -> None:
-    optimized = optimise_for_max_detection_range(
-        scenario,
-        radar,
-        detection_probability_threshold,
-        false_alarm_probability_threshold,
-    )
-    line_of_sight = line_of_sight_in_body_frame(
-        optimized.detection_geometry.radar_pose,
-        optimized.detection_geometry.target_position,
-    )
     log_section("Optimised for max detection range")
-    logger.info("optimised_target_range_m    = %.1f", line_of_sight.range_m)
-    logger.info("optimised_target_range_nmi  = %.3f", line_of_sight.range_m / 1852.0)
-    logger.info("scenario_sinr_db            = %s", scenario_sinr_db(optimized, radar))
+    try:
+        optimized = optimise_for_max_detection_range(
+            scenario,
+            radar,
+            detection_probability_threshold,
+            false_alarm_probability_threshold,
+        )
+        line_of_sight = line_of_sight_in_body_frame(
+            optimized.detection_geometry.radar_pose,
+            optimized.detection_geometry.target_position,
+        )
+        logger.info("optimised_target_range_m    = %.1f", line_of_sight.range_m)
+        logger.info(
+            "optimised_target_range_nmi  = %.3f", line_of_sight.range_m / 1852.0
+        )
+        logger.info(
+            "scenario_sinr_db            = %s", scenario_sinr_db(optimized, radar)
+        )
+    except ValueError:
+        logger.info("UNDETECTABLE")
 
 
 def radar_diagnostics(radar: RadarSystem, scenario: Scenario) -> None:
@@ -292,16 +299,20 @@ def radar_diagnostics(radar: RadarSystem, scenario: Scenario) -> None:
     log_clutter(scenario, radar)
     log_max_range(scenario, radar)
     log_swerling_sweep(scenario, radar)
-    # log_optimised_for_max_detection_range(
-    #     scenario,
-    #     radar,
-    #     DETECTION_PROBABILITY,
-    #     FALSE_ALARM_PROBABILITY,
-    # )
+    log_optimised_for_max_detection_range(
+        scenario,
+        radar,
+        DETECTION_PROBABILITY,
+        FALSE_ALARM_PROBABILITY,
+    )
     log_link_budget(scenario, radar)
 
-
-if __name__ == "__main__":
+def main():
     radar = build_radar_2()
     scenario = build_scenario_3(radar_altitude=1100, target_altitude=10)
     radar_diagnostics(radar, scenario)
+
+
+if __name__ == "__main__":
+    main()
+    

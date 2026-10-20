@@ -1,27 +1,32 @@
 import math
+from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pymap3d
 from matplotlib.patches import Ellipse, Rectangle, Wedge
 
-from main import DETECTION_PROBABILITY, FALSE_ALARM_PROBABILITY, radar_diagnostics
-from scenario_1 import (
+from radarlab.diagnostics import (
+    radar_diagnostics,
+)
+from radarlab.example_scenarios import (
     build_radar_1,
     build_radar_2,
     build_scenario_1,
     build_scenario_2,
     build_scenario_3,
 )
-from kinematics import DetectionGeometry
-from radar import (
+from radarlab.kinematics import DetectionGeometry
+from radarlab.radar import (
     RadarSystem,
     closed_form_max_detection_range,
     required_single_pulse_snr_db,
     snr_on_target,
     to_db,
 )
-from scenario import (
+from radarlab.scenario import (
+    DETECTION_PROBABILITY,
+    FALSE_ALARM_PROBABILITY,
     Scenario,
     line_of_sight_in_body_frame,
     scenario_sinr_margin_db,
@@ -309,6 +314,25 @@ def plot_snr_against_range(
     axis.grid(alpha=0.3, which="both")
 
 
+def plot_sweep(
+    x_values: Iterable[float],
+    y_values: Iterable[float],
+    *,
+    title: str,
+    x_label: str,
+    y_label: str,
+) -> None:
+    plt.figure(figsize=(8, 5))
+    plt.plot(list(x_values), list(y_values), marker="o", linewidth=2)
+    disable_scientific_y_axis(plt)
+    plt.title(title)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
 def visualise(scenario: Scenario, radar: RadarSystem, save_path: str | None = None):
     figure, axes = plt.subplots(2, 2, figsize=(14, 10))
     plot_plan_view(axes[0, 0], scenario.detection_geometry, radar)
@@ -325,7 +349,7 @@ def main() -> None:
     radar = build_radar_1()
     scenario = build_scenario_3()
     radar_diagnostics(radar, scenario)
-    visualise(scenario, radar, save_path="radar_run.png")
+    visualise(scenario, radar)
     plt.show()
 
 

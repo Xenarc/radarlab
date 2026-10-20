@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 import numpy as np
 import pymap3d
 from scipy.spatial.transform import Rotation
-from radar import (
+from radarlab.radar import (
     Target,
 )
 

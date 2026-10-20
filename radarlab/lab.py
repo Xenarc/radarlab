@@ -11,18 +11,44 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")  # must be set before pyplot is imported
 
-from main import radar_diagnostics
-from radar import RadarSystem
-from scenario import Scenario
-from scenario_1 import build_radar_1, build_radar_2, build_scenario_1, build_scenario_2, build_scenario_3
-from visualise import visualise
+from radarlab.diagnostics import radar_diagnostics
+from radarlab.radar import RadarSystem
+from radarlab.scenario import Scenario
+from radarlab.example_scenarios import build_radar_1, build_radar_2, build_scenario_1, build_scenario_2, build_scenario_3
+from radarlab.visualise import visualise
 
 import matplotlib.pyplot as plt
 import streamlit as st
 from pydantic import ValidationError
+import contextlib
+import io
+import logging
 
-RADAR_PRESETS = {"Radar 1": build_radar_1, "Radar 2 (APG-79 class)": build_radar_2}
-SCENARIO_PRESETS = {"Scenario 1": build_scenario_1,"Scenario 2": build_scenario_2, "Scenario 3": build_scenario_3}
+
+@contextlib.contextmanager
+def capture_output():
+    """Capture print(), stderr and logging output into one buffer."""
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    old_level = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            yield buf
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(old_level)
+
+
+RADAR_PRESETS = {"Radar 1": build_radar_1, "Radar 2": build_radar_2}
+SCENARIO_PRESETS = {
+    "Surface to air": build_scenario_1,
+    "Co-altitude": build_scenario_2,
+    "Lookdown over Sea": build_scenario_3,
+}
 
 st.set_page_config(page_title="Radar sandbox", layout="wide")
 
@@ -51,7 +77,7 @@ if "scenario_json" not in st.session_state:
 st.title("Radar sandbox")
 st.caption("Edit the JSON, then press Ctrl+Enter (or click outside the box) to re-run.")
 
-left, right = st.columns([1, 1.3], gap="large")
+left, right = st.columns([1, 3], gap="large")
 
 # ------------------------------ Editors -----------------------------------
 with left:
@@ -105,19 +131,18 @@ with right:
         with tempfile.TemporaryDirectory() as tmp:
             save_path = Path(tmp) / "radar_run.png"
             try:
-                with contextlib.redirect_stdout(stdout):
+                with capture_output() as captured:
                     if radar is not None and scenario is not None:
                         radar_diagnostics(radar, scenario)
                         visualise(scenario, radar, save_path=str(save_path))
             except Exception as exc:  # surface runtime errors in the UI
                 st.exception(exc)
             else:
-                if stdout.getvalue():
-                    with st.expander("Diagnostics", expanded=True):
-                        st.code(stdout.getvalue(), language=None)
-
                 for num in plt.get_fignums():
                     st.pyplot(plt.figure(num), clear_figure=False)
+                if captured.getvalue():
+                    with st.expander("Diagnostics", expanded=True):
+                        st.code(captured.getvalue(), language=None)
 
                 if save_path.exists():
                     st.download_button(
@@ -127,9 +152,10 @@ with right:
                         mime="image/png",
                     )
         plt.close("all")
-if __name__ == "__main__":
-    import sys
 
+def lab():
+    import sys
+    
     from streamlit.runtime import exists
     from streamlit.web import cli
 
@@ -138,3 +164,7 @@ if __name__ == "__main__":
     if not exists():
         sys.argv = ["streamlit", "run", __file__, *sys.argv[1:]]
         sys.exit(cli.main())
+
+
+if __name__ == "__main__":
+    lab()
